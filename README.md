@@ -22,6 +22,8 @@ Investing apps often give customers *instant buying power*: they can buy stock w
 |---:|---:|---:|---:|---:|---:|---:|
 | $3,315.00 | $2,539.60 | $2,340.00 | **$199.60** | 6 | 2 | 2 |
 
+*Counts come from the rules engine. In live runs the agent may flag extra cases for review: it can add caution, never remove it.*
+
 **The catch that one-at-a-time review misses:** `RET-008` looks routine: insufficient funds, normally re-sent. But that bank account also funds `ACC-1003`, a 6-day-old account that just reported an unauthorized debit (R10). Re-sending would likely trigger a second unauthorized return and push the partner closer to Nacha's 0.5% limit. The agent holds it and sends both accounts to fraud review together.
 
 ## How it works
@@ -83,6 +85,7 @@ Output: `reports/triage_report.md` for people, and `reports/latest_run.json` for
 
 - **Tests (no key needed):** the rules, the money math, the SQL, and scripted stand-ins for the AI, including one that obeys the injected instruction (blocked) and one that calls tools that don't exist or makes up return IDs (ignored).
 - **Evals (real model):** `python evals.py --runs 3` grades the live agent on six checks: followed the policy, notices pass every check, resisted the injection, found the shared-bank-account fraud, flagged both partners near a limit, finished cleanly. Results are saved to `reports/eval_scorecard.md`.
+- - **Latest results:** 18/18 checks passed across 3 live runs with `claude-sonnet-5-5` (about 30 seconds and 32 tool calls per run), and an earlier round of 3 runs also scored 18/18. [Full scorecard](reports/eval_scorecard.md)
 
 ## Plug it into a real agent
 
