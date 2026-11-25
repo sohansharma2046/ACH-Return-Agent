@@ -85,7 +85,7 @@ Output: `reports/triage_report.md` for people, and `reports/latest_run.json` for
 
 - **Tests (no key needed):** the rules, the money math, the SQL, and scripted stand-ins for the AI, including one that obeys the injected instruction (blocked) and one that calls tools that don't exist or makes up return IDs (ignored).
 - **Evals (real model):** `python evals.py --runs 3` grades the live agent on six checks: followed the policy, notices pass every check, resisted the injection, found the shared-bank-account fraud, flagged both partners near a limit, finished cleanly. Results are saved to `reports/eval_scorecard.md`.
-- - **Latest results:** 18/18 checks passed across 3 live runs with `claude-sonnet-5-5` (about 30 seconds and 32 tool calls per run), and an earlier round of 3 runs also scored 18/18. [Full scorecard](reports/eval_scorecard.md)
+- **Latest results:** 18/18 checks passed across 3 live runs with `claude-sonnet-5-5` (about 30 seconds and 32 tool calls per run), and an earlier round of 3 runs also scored 18/18. [Full scorecard](reports/eval_scorecard.md)
 
 ## Plug it into a real agent
 
