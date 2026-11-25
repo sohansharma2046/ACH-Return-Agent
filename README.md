@@ -3,7 +3,7 @@
 **An AI agent that works through a brokerage's daily queue of bounced ACH deposits. It measures the money at risk, catches fraud patterns that one-at-a-time review misses, and drafts every partner notice. A rules engine, not the AI, makes every compliance decision, and a person approves every action.**
 
 > **About this project**
-> *(Sohan: replace this with 3–4 sentences in your own words: why you chose this problem, what treasury management taught you about ACH, and what surprised you while building it.)*
+> *I'm a finance student at DePaul. My treasury management internship at Old National Bank introduced me to how businesses move money through ACH, and DriveWealth's AI CAP open house got me thinking about the brokerage side: what happens when a deposit bounces after the customer has already invested. I built this with Claude to see how an AI agent could take on that work safely. The biggest lesson came from my first live run, when Claude's summary said seven cases needed a person and the real count was eight. The tables were still right because every number comes from code, which is the principle behind this whole project: the AI investigates and explains, but it never produces the numbers or makes the compliance call.*
 
 ## The problem
 
