@@ -1,0 +1,13 @@
+{
+  "_note": "Fictional sample data. By design there are no names, SSNs or bank numbers: bank accounts appear only as fingerprints (one-way hashes), so the AI never sees personal information.",
+  "ACC-1001": {"partner": "Lumen Wallet",     "opened": "2025-10-08", "cash_balance": 120.00,  "positions_value": 640.00,  "bank_fingerprint": "bk_3c91", "prior_returns": []},
+  "ACC-1002": {"partner": "Northwind Invest", "opened": "2026-10-20", "cash_balance": 15.40,   "positions_value": 480.00,  "bank_fingerprint": "bk_a207",
+               "prior_returns": [{"code": "R01", "date": "2026-10-30", "represent_attempts": 2}]},
+  "ACC-1003": {"partner": "Lumen Wallet",     "opened": "2026-11-18", "cash_balance": 0.00,    "positions_value": 870.00,  "bank_fingerprint": "bk_7f3a", "prior_returns": []},
+  "ACC-1004": {"partner": "Harbor Neobank",   "opened": "2026-04-09", "cash_balance": 310.25,  "positions_value": 0.00,    "bank_fingerprint": "bk_d4e2", "prior_returns": []},
+  "ACC-1005": {"partner": "Northwind Invest", "opened": "2024-06-12", "cash_balance": 2400.00, "positions_value": 5200.00, "bank_fingerprint": "bk_19bc", "prior_returns": []},
+  "ACC-1006": {"partner": "Harbor Neobank",   "opened": "2026-09-24", "cash_balance": 45.00,   "positions_value": 120.00,  "bank_fingerprint": "bk_5e60",
+               "prior_returns": [{"code": "R03", "date": "2026-11-10", "represent_attempts": 0}]},
+  "ACC-1007": {"partner": "Lumen Wallet",     "opened": "2026-06-27", "cash_balance": 75.00,   "positions_value": 0.00,    "bank_fingerprint": "bk_c118", "prior_returns": []},
+  "ACC-1008": {"partner": "Lumen Wallet",     "opened": "2026-11-15", "cash_balance": 20.00,   "positions_value": 850.00,  "bank_fingerprint": "bk_7f3a", "prior_returns": []}
+}

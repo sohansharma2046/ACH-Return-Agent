@@ -1,90 +1,73 @@
-"""Run the ACH Return Triage Agent on a batch of returned deposits.
+"""Triage today's returned ACH deposits.
 
-    python run.py --offline          # no API key needed: rules engine + templates
-    python run.py                    # uses Claude (needs ANTHROPIC_API_KEY)
-    python run.py --auto-approve     # skip the human approval prompts
+    python run.py              uses Claude if ANTHROPIC_API_KEY is set, otherwise runs offline
+    python run.py --offline    rules engine and template text only, no AI, no key needed
+    python run.py --review     approve or reject each action in the terminal
+
+Writes reports/triage_report.md (for people) and reports/latest_run.json (for other systems).
 """
+
+from __future__ import annotations
 
 import argparse
 import os
-import sys
-from datetime import datetime
 from pathlib import Path
 
-from ach_agent.agent import MODEL, triage_offline, triage_with_claude
-from ach_agent.tools import Toolbox, load_batch
-
-SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
-
-
-def review(result: dict, auto: bool) -> str:
-    """Human-in-the-loop: a person approves each action before it happens."""
-    r, d = result["return"], result["decision"]
-    print("\n" + "-" * 72)
-    print(f"{r['return_id']}  {r['account_id']}  ${r['amount']:,.2f}  {r['return_code']}   severity: {d['severity'].upper()}")
-    print(f"Action: {d['action']}")
-    print(f"Summary: {result['summary']}")
-    print(f"Partner notice: {result['notice']}")
-    if result["needs_attention"]:
-        failed = [k for k, v in result["checks"].items() if not v]
-        print(f"!! Agent check failed: {', '.join(failed)}. Review carefully.")
-    if auto:
-        return "auto-approved"
-    while True:
-        ans = input("Approve this action? [y]es / [n]o / [s]kip: ").strip().lower()
-        if ans in ("y", "n", "s"):
-            return {"y": "approved", "n": "rejected", "s": "skipped"}[ans]
+from ach_agent.agent import MODEL, run_agent, run_offline
+from ach_agent.data import SampleData
+from ach_agent.report import write
+from ach_agent.tools import Toolbox
 
 
-def write_report(results: list, mode: str, path: Path) -> None:
-    lines = [f"# ACH return triage report", "",
-             f"Generated {datetime.now():%Y-%m-%d %H:%M} · mode: {mode} · {len(results)} returns", "",
-             "| Return | Account | Amount | Code | Severity | Action | Human review | Decision |",
-             "|---|---|---:|---|---|---|---|---|"]
-    for x in results:
-        r, d = x["return"], x["decision"]
-        lines.append(f"| {r['return_id']} | {r['account_id']} | ${r['amount']:,.2f} | {r['return_code']} | "
-                     f"{d['severity']} | {d['action']} | {'required' if d['human_review_required'] else '-'} | {x['review']} |")
-    for x in results:
-        r, d = x["return"], x["decision"]
-        lines += ["", f"## {r['return_id']}: {r['return_code']}, ${r['amount']:,.2f}", "",
-                  f"**Action:** {d['action']}  ", f"**Why:** " + " ".join(d["reasons"]), "",
-                  f"**Summary:** {x['summary']}", "", f"**Partner notice:** {x['notice']}", "",
-                  f"**Agent checks:** " + ", ".join(f"{k} {'✓' if v else '✗'}" for k, v in x["checks"].items()),
-                  f"**Tools called:** " + " → ".join(t["tool"] for t in x["trace"])]
-    path.parent.mkdir(exist_ok=True)
-    path.write_text("\n".join(lines) + "\n")
+def review(run: dict) -> None:
+    """Human in the loop: nothing happens until a person approves it."""
+    for c in run["cases"]:
+        r, d = c["return"], c["decision"]
+        print(f"\n{r['return_id']}  {r['return_code']}  ${r['amount']:,.2f}  {d['severity'].upper()}  ->  {d['action']}")
+        for reason in d["reasons"]:
+            print(f"   - {reason}")
+        if c["notice"]:
+            print(f"   Notice ({c['notice']['status']}): {c['notice']['notice']}")
+        answer = ""
+        while answer not in ("y", "n", "s"):
+            answer = input("   Approve? [y]es / [n]o / [s]kip: ").strip().lower()
+        c["approval"] = {"y": "approved", "n": "rejected", "s": "pending"}[answer]
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(description="ACH Return Triage Agent")
-    p.add_argument("--offline", action="store_true", help="run without Claude (rules engine + template notices)")
-    p.add_argument("--auto-approve", action="store_true", help="skip human approval prompts")
+    p.add_argument("--offline", action="store_true", help="no AI: rules engine and template text")
+    p.add_argument("--review", action="store_true", help="approve or reject each action")
     p.add_argument("--batch", type=Path, help="CSV of returned deposits (default: data/returns_batch.csv)")
-    p.add_argument("--out", type=Path, default=Path("reports/triage_report.md"))
+    p.add_argument("--out", type=Path, default=Path("reports"))
     args = p.parse_args()
 
-    batch = load_batch(args.batch)
-    box = Toolbox(batch)
-
-    if args.offline:
-        mode, run = "offline (rules only)", lambda r: triage_offline(r, box)
+    box = Toolbox(SampleData(batch_file=args.batch))
+    if args.offline or not os.environ.get("ANTHROPIC_API_KEY"):
+        if not args.offline:
+            print("No ANTHROPIC_API_KEY found, so running offline (rules only). Set a key to run the AI agent.")
+        run = run_offline(box)
     else:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            sys.exit("Set ANTHROPIC_API_KEY, or run with --offline.")
         import anthropic
-        client = anthropic.Anthropic()
-        mode, run = f"agent ({MODEL})", lambda r: triage_with_claude(r, box, client)
+        print(f"Running the agent with {MODEL} on {len(box.batch)} returned deposits...")
+        run = run_agent(box, anthropic.Anthropic())
 
-    print(f"Triaging {len(batch)} returned deposits · {mode}")
-    results = [run(r) for r in batch]
-    results.sort(key=lambda x: SEV_ORDER[x["decision"]["severity"]])  # worst first
-    for x in results:
-        x["review"] = review(x, args.auto_approve)
+    if args.review:
+        review(run)
+    md, js = write(run, args.out)
 
-    write_report(results, mode, args.out)
-    high = sum(x["decision"]["severity"] == "high" for x in results)
-    print(f"\nDone. {high} high-severity returns. Report saved to {args.out}")
+    t, b = run["totals"], run["briefing"]
+    print(f"\n{b.get('headline', '')}\n")
+    print(f"  {t['returns']} returns · ${t['total_returned']:,.2f} returned · ${t['deficits']:,.2f} in deficits · "
+          f"${t['uncovered']:,.2f} unsecured · {t['need_human_review']} need a person · "
+          f"{t['fraud_escalations']} fraud escalations")
+    for c in run["cases"][:5]:
+        r, d = c["return"], c["decision"]
+        print(f"  {d['severity'].upper():6} {r['return_id']} {r['return_code']} ${r['amount']:>9,.2f}  {d['action']}")
+    flagged = [c["return"]["return_id"] for c in run["cases"] if c["needs_attention"]]
+    if flagged:
+        print(f"\n  Agent checks failed on: {', '.join(flagged)}. See the report.")
+    print(f"\nReport: {md}\nData for other systems: {js}")
 
 
 if __name__ == "__main__":

@@ -1,103 +1,142 @@
-"""Deterministic triage rules for returned ACH deposits.
+"""Binding triage rules for returned ACH deposits. No AI in this file.
 
-These rules are the guardrail: the AI agent must call this policy and may not
-override it. The AI explains the decision and drafts communications; it does not
-make compliance calls on its own.
-
-Every rule here is a business choice. See DECISIONS.md for the reasoning.
+The agent must call these rules and can never weaken them. It may ask for extra
+human review, but it can't change an action or allow a retry.
+DECISIONS.md explains every rule in plain English.
 """
 
-from dataclasses import dataclass, field, asdict
+from __future__ import annotations
 
-MAX_REPRESENTMENTS = 2  # Nacha limit for R01/R09 within 180 days
-REPEAT_RETURN_WINDOW_DAYS = 90
+from dataclasses import asdict, dataclass, field
+from datetime import date
+
+from .analytics import days_between
+
+MAX_REPRESENTMENTS = 2          # Nacha: R01/R09 may be re-presented at most twice in 180 days
+REPEAT_WINDOW_DAYS = 90         # a second return inside this window is a pattern
+NEW_ACCOUNT_DAYS = 30           # young accounts carry new-account fraud risk
+UNSECURED_REVIEW_USD = 100.00   # an unsecured shortfall this large needs a person
+LEVELS = ["low", "medium", "high"]
+
+ACTIONS = [
+    "represent_once",
+    "stop_retries_and_contact_customer",
+    "request_new_bank_link",
+    "stop_debits_and_contact_customer",
+    "freeze_and_escalate_to_fraud",
+    "hold_and_escalate_to_fraud",
+    "escalate_to_compliance",
+    "escalate_to_operations",
+]
 
 
 @dataclass
 class Decision:
-    action: str                      # what happens next
-    retry: bool = False              # re-present the ACH debit?
+    return_id: str
+    action: str
+    retry: bool = False
     restrict_buying_power: bool = False
     freeze_account: bool = False
-    human_review_required: bool = False
-    severity: str = "low"            # low / medium / high
+    human_review: bool = False
+    severity: str = "low"
     reasons: list = field(default_factory=list)
+    exposure: dict = field(default_factory=dict)
 
-    def to_dict(self):
+    def raise_to(self, level: str) -> None:
+        if LEVELS.index(level) > LEVELS.index(self.severity):
+            self.severity = level
+
+    def to_dict(self) -> dict:
         return asdict(self)
 
 
-def _days_between(d1: str, d2: str) -> int:
-    from datetime import date
-    a, b = date.fromisoformat(d1), date.fromisoformat(d2)
-    return abs((b - a).days)
+def decide(ret: dict, code_info: dict | None, account: dict | None, *,
+           exposure: dict, linked: list[dict], earlier_returns: list[str], as_of: date) -> Decision:
+    """The binding decision for one returned deposit.
 
-
-def decide(ret: dict, code_info: dict | None, account: dict | None) -> Decision:
-    """Return the binding decision for one returned ACH entry.
-
-    ret: one row of the returns batch (return_code, amount, return_date, ...)
-    code_info: the entry from return_codes.json, or None if the code is unknown
-    account: the account record, or None if it can't be found
+    linked: accounts funded from the same bank account, each {"account_id", "unauthorized": bool}
+    earlier_returns: other returns on this account earlier in today's batch
     """
-    code = ret["return_code"]
+    rid, code = ret["return_id"], ret["return_code"]
 
-    # Guardrail 1: anything we can't look up goes to a person.
     if account is None:
-        return Decision("escalate_to_operations", human_review_required=True, severity="high",
-                        reasons=["Account not found; cannot assess exposure."])
+        return Decision(rid, "escalate_to_operations", human_review=True, severity="high", exposure=exposure,
+                        reasons=["Account not found, so the money at risk can't be measured."])
+
+    category = code_info["category"] if code_info else "unknown"
+
+    # 1. Base action from the return code
     if code_info is None:
-        return Decision("escalate_to_operations", restrict_buying_power=True,
-                        human_review_required=True, severity="medium",
-                        reasons=[f"Unrecognized return code {code}; a person must classify it."])
-
-    category = code_info["category"]
-    used_unsettled = account.get("instant_buying_power_used", 0) > 0
-    recent_returns = [r for r in account.get("prior_returns", [])
-                      if _days_between(r["date"], ret["return_date"]) <= REPEAT_RETURN_WINDOW_DAYS]
-
-    # Base decision by category
-    if category == "unauthorized":
-        d = Decision("freeze_and_escalate_to_fraud", freeze_account=True, restrict_buying_power=True,
-                     human_review_required=True, severity="high",
-                     reasons=[f"{code} means the customer says the debit was not authorized: possible fraud or account takeover.",
-                              "Unauthorized returns count toward Nacha's 0.5% threshold."])
+        d = Decision(rid, "escalate_to_operations", restrict_buying_power=True, human_review=True, severity="medium",
+                     reasons=[f"{code} is not a recognized Nacha return code, so a person must classify it."])
+    elif category == "unauthorized":
+        d = Decision(rid, "freeze_and_escalate_to_fraud", freeze_account=True, restrict_buying_power=True,
+                     human_review=True, severity="high",
+                     reasons=[f"{code}: the account holder says this debit wasn't authorized. "
+                              "Possible fraud or account takeover. Never re-present."])
     elif category == "nsf":
-        prior_attempts = max([r.get("represent_attempts", 0) for r in recent_returns
-                              if r["code"] in ("R01", "R09")], default=0)
-        if prior_attempts >= MAX_REPRESENTMENTS:
-            d = Decision("stop_retries_and_contact_customer", restrict_buying_power=True,
-                         human_review_required=True, severity="medium",
-                         reasons=[f"Already re-presented {prior_attempts} times; Nacha allows at most {MAX_REPRESENTMENTS}."])
+        attempts = max((p.get("represent_attempts", 0) for p in account.get("prior_returns", [])
+                        if p["code"] in ("R01", "R09") and days_between(p["date"], as_of) <= 180), default=0)
+        if attempts >= MAX_REPRESENTMENTS:
+            d = Decision(rid, "stop_retries_and_contact_customer", restrict_buying_power=True, human_review=True,
+                         severity="medium",
+                         reasons=[f"Already re-presented {attempts} times; Nacha allows at most {MAX_REPRESENTMENTS}."])
         else:
-            d = Decision("represent_once", retry=True, severity="low",
-                         reasons=["Insufficient or uncollected funds can be re-presented (up to 2 times in 180 days)."])
+            d = Decision(rid, "represent_once", retry=True,
+                         reasons=[f"{code}: not enough money in the bank account. Nacha allows re-presenting "
+                                  f"up to {MAX_REPRESENTMENTS} times within 180 days."])
     elif category == "revoked":
-        d = Decision("stop_debits_and_contact_customer", restrict_buying_power=True, severity="medium",
-                     reasons=[f"{code}: the customer revoked or stopped the payment. Never re-debit without new authorization."])
+        d = Decision(rid, "stop_debits_and_contact_customer", severity="medium",
+                     reasons=[f"{code}: the customer revoked or stopped this payment. "
+                              "Never debit again without new authorization."])
     elif category == "frozen":
-        d = Decision("escalate_to_compliance", restrict_buying_power=True, human_review_required=True,
-                     severity="high", reasons=["Receiving account is frozen; may be OFAC-related. Compliance must review."])
-    else:  # administrative: closed / wrong / invalid account
-        d = Decision("request_new_bank_link", restrict_buying_power=True, severity="low",
+        d = Decision(rid, "escalate_to_compliance", restrict_buying_power=True, human_review=True, severity="high",
+                     reasons=[f"{code}: the bank account is frozen, possibly under OFAC sanctions rules. "
+                              "Compliance must review."])
+    else:  # bad_account
+        d = Decision(rid, "request_new_bank_link",
                      reasons=[f"{code}: the bank details don't work. The customer must link a valid account."])
+    d.exposure = exposure
 
-    # Modifiers that raise the stakes
-    if used_unsettled:
+    # 2. Money at risk
+    deficit, uncovered = exposure.get("deficit") or 0, exposure.get("uncovered") or 0
+    if deficit > 0:
         d.restrict_buying_power = True
-        d.reasons.append(f"Customer already used ${account['instant_buying_power_used']:,.2f} of instant buying power "
-                         "before the deposit settled, so the broker is exposed to a loss.")
-        if d.severity == "low":
-            d.severity = "medium"
+        d.raise_to("medium")
+        d.reasons.append(f"Reversing this deposit leaves a ${deficit:,.2f} deficit: the customer already used money "
+                         f"that never arrived. Selling their positions could cover "
+                         f"${exposure['covered_by_positions']:,.2f}; ${uncovered:,.2f} is unsecured.")
+        if uncovered >= UNSECURED_REVIEW_USD:
+            d.human_review = True
+            d.raise_to("high")
 
-    if recent_returns and category != "nsf":
-        d.human_review_required = True
-        d.severity = "high"
-        d.reasons.append(f"Second return on this account within {REPEAT_RETURN_WINDOW_DAYS} days: pattern risk.")
+    # 3. Shared bank accounts: the pattern one-at-a-time review misses
+    risky = [l["account_id"] for l in linked if l["unauthorized"]]
+    if risky and category != "unauthorized":
+        d.action, d.retry = "hold_and_escalate_to_fraud", False
+        d.restrict_buying_power = d.human_review = True
+        d.raise_to("high")
+        d.reasons.append(f"Funded from the same bank account as {', '.join(risky)}, which has an unauthorized "
+                         "return. Re-presenting would likely trigger another unauthorized return, so hold it for "
+                         "fraud review.")
+    elif linked:
+        d.human_review = True
+        d.raise_to("medium")
+        d.reasons.append(f"Shares a bank account with {', '.join(l['account_id'] for l in linked)}. "
+                         "Review these accounts together.")
 
-    if account.get("account_age_days", 999) < 30 and category in ("unauthorized", "administrative"):
-        d.human_review_required = True
-        d.severity = "high"
-        d.reasons.append("Account is under 30 days old: new-account fraud risk.")
+    # 4. Repeat returns and new accounts
+    recent = [p for p in account.get("prior_returns", []) if days_between(p["date"], as_of) <= REPEAT_WINDOW_DAYS]
+    if (recent or earlier_returns) and category != "nsf":
+        d.human_review = True
+        d.raise_to("high")
+        d.reasons.append(f"Another return on this account within {REPEAT_WINDOW_DAYS} days. "
+                         "One return can be a mistake; two is a pattern.")
+
+    age = days_between(account["opened"], as_of)
+    if age < NEW_ACCOUNT_DAYS and category in ("unauthorized", "bad_account"):
+        d.human_review = True
+        d.raise_to("high")
+        d.reasons.append(f"Account is only {age} days old, a common profile for new-account fraud.")
 
     return d

@@ -1,0 +1,6 @@
+{
+  "_note": "Fictional partner programs. ACH debit volume and returns over the trailing 60 days, before today's batch.",
+  "Lumen Wallet":     {"ach_debits_60d": 2400, "unauthorized_returns_60d": 10, "administrative_returns_60d": 30, "total_returns_60d": 70},
+  "Northwind Invest": {"ach_debits_60d": 5000, "unauthorized_returns_60d": 5,  "administrative_returns_60d": 40, "total_returns_60d": 120},
+  "Harbor Neobank":   {"ach_debits_60d": 800,  "unauthorized_returns_60d": 1,  "administrative_returns_60d": 20, "total_returns_60d": 45}
+}
